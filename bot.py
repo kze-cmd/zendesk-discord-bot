@@ -172,7 +172,9 @@ def start_aiohttp():
     app.router.add_post('/', webhook_handler)
     runner = web.AppRunner(app)
     asyncio.run(runner.setup())
-    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    port = int(os.getenv('PORT', 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    logging.info(f"AIOHTTP Webhook LIVE on http://0.0.0.0:{port}")
     logging.info("AIOHTTP Webhook LIVE on http://0.0.0.0:8080")
     asyncio.run(site.start())
     asyncio.Event().wait()  # Keep alive
