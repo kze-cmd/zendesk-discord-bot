@@ -1,3 +1,4 @@
+import logging
 import discord
 from discord.ext import commands
 import requests
@@ -11,6 +12,7 @@ import threading
 import base64
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 ZENDESK_SUBDOMAIN = os.getenv('ZENDESK_SUBDOMAIN')
@@ -122,6 +124,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
+# === WEBHOOK SERVER ===
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         auth = self.headers.get('Authorization')
@@ -176,10 +179,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 def run_webhook_server():
     server = HTTPServer(('0.0.0.0', 8080), WebhookHandler)
-    print("Webhook server running on port 8080...")
+    logging.info("Webhook server running on port 8080...")
     server.serve_forever()
 
 threading.Thread(target=run_webhook_server, daemon=True).start()
 
-print("Starting Discord bot...")
+logging.info("Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
