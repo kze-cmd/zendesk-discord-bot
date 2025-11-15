@@ -10,10 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import base64
 
-# === LOAD ENV VARS (from Render Secrets) ===
 load_dotenv()
 
-# === CONFIG ===
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 ZENDESK_SUBDOMAIN = os.getenv('ZENDESK_SUBDOMAIN')
 ZENDESK_EMAIL = os.getenv('ZENDESK_EMAIL')
@@ -22,11 +20,9 @@ MAIN_CHANNEL_ID = int(os.getenv('MAIN_CHANNEL_ID'))
 WEBHOOK_USER = os.getenv('WEBHOOK_USER')
 WEBHOOK_PASS = os.getenv('WEBHOOK_PASS')
 
-# Zendesk API
 ZENDESK_AUTH = requests.auth.HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN)
 ZENDESK_URL = f'https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2'
 
-# === SQLITE DB ===
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -38,7 +34,6 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === DISCORD BOT ===
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -60,7 +55,6 @@ async def on_message(message):
     user_id = message.author.id
     guild = message.guild
 
-    # === 1. MAIN CHANNEL: Create private + ticket ===
     if message.channel.id == MAIN_CHANNEL_ID:
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -77,7 +71,6 @@ async def on_message(message):
             "Our team will respond shortly. All messages here will sync with Zendesk."
         )
 
-        # Create Zendesk ticket
         payload = {
             "ticket": {
                 "subject": f"Discord Support: {message.content[:50]}...",
@@ -96,7 +89,6 @@ async def on_message(message):
             ticket_data = response.json()['ticket']
             ticket_id = ticket_data['id']
 
-            # Save mapping
             cursor.execute(
                 "INSERT OR REPLACE INTO tickets (user_id, channel_id, ticket_id) VALUES (?, ?, ?)",
                 (user_id, private_channel.id, ticket_id)
@@ -112,7 +104,6 @@ async def on_message(message):
 
         return
 
-    # === 2. PRIVATE CHANNEL: Send reply to Zendesk ===
     if message.channel.name.startswith('support-'):
         cursor.execute("SELECT ticket_id FROM tickets WHERE channel_id = ?", (message.channel.id,))
         result = cursor.fetchone()
@@ -131,10 +122,8 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-# === WEBHOOK SERVER (Zendesk → Discord) ===
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # === BASIC AUTH ===
         auth = self.headers.get('Authorization')
         if not auth or not auth.startswith('Basic '):
             self.send_response(401)
@@ -152,7 +141,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # === PROCESS PAYLOAD ===
         global discord_bot
         if not discord_bot:
             self.send_response(503)
@@ -171,7 +159,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 channel = discord_bot.get_channel(result[0])
                 if channel:
                     asyncio.run_coroutine_threadsafe(
-                        channel.send("**Ticket Solved** ✅\nYour support request has been marked as resolved.\n"
+                        channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
                                      "Send a new message here to reopen support."),
                         discord_bot.loop
                     )
@@ -183,7 +171,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write("Zendesk → Discord Webhook Active")
+        self.wfile.write(b"Zendesk -> Discord Webhook Active")
 
 
 def run_webhook_server():
@@ -193,5 +181,5 @@ def run_webhook_server():
 
 threading.Thread(target=run_webhook_server, daemon=True).start()
 
-# === START BOT ===
+print("Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
