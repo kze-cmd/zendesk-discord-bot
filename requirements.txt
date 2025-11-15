@@ -1,3 +1,8 @@
+<<<<<<< HEAD
 discord.py
 requests
+=======
+discord.py
+requests
+>>>>>>> 81b3b18c403ea937c91bafcb42c14b75f36996a1
 python-dotenv
