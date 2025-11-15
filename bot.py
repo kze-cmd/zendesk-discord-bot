@@ -123,62 +123,60 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# === WORKING WEBHOOK SERVER (NO FLASK) ===
-from http.server import BaseHTTPRequestHandler, HTTPServer
+# === 100% WORKING WEBHOOK (NO FLASK, BUILT-IN) ===
+from wsgiref.simple_server import make_server
 import json
 import threading
 
-class DiscordWebhookHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        # === AUTH ===
-        auth = self.headers.get('Authorization')
-        if auth != 'Basic ZGlzY29yZGJvdDpzdXBlcnNlY3JldDEyMw==':
-            self.send_response(401)
-            self.end_headers()
-            return
+def webhook_app(environ, start_response):
+    # === CHECK METHOD ===
+    if environ['REQUEST_METHOD'] != 'POST':
+        start_response('404 Not Found', [('Content-Type', 'application/json')])
+        return [b'{"message":"Cannot POST /","error":"Not Found","statusCode":404}']
 
-        # === READ BODY ===
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode('utf-8')
-        try:
-            data = json.loads(body)
-        except:
-            self.send_response(400)
-            self.end_headers()
-            return
+    # === AUTH ===
+    auth = environ.get('HTTP_AUTHORIZATION')
+    if auth != 'Basic ZGlzY29yZGJvdDpzdXBlcnNlY3JldDEyMw==':
+        start_response('401 Unauthorized', [('Content-Type', 'application/json')])
+        return [b'{"error":"Unauthorized"}']
 
-        # === SOLVED TICKET ===
-        if data.get('ticket', {}).get('status') == 'solved':
-            ticket_id = data['ticket']['id']
-            cursor.execute("SELECT channel_id FROM tickets WHERE ticket_id = ?", (ticket_id,))
-            row = cursor.fetchone()
-            if row:
-                channel = discord_bot.get_channel(row[0])
-                if channel:
-                    asyncio.run_coroutine_threadsafe(
-                        channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
-                                     "Send a new message here to reopen support."),
-                        discord_bot.loop
-                    )
+    # === READ BODY ===
+    try:
+        length = int(environ.get('CONTENT_LENGTH', 0))
+    except ValueError:
+        length = 0
+    body = environ['wsgi.input'].read(length)
+    try:
+        data = json.loads(body)
+    except:
+        start_response('400 Bad Request', [('Content-Type', 'application/json')])
+        return [b'{"error":"Invalid JSON"}']
 
-        # === RESPONSE ===
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(b'{"status":"ok"}')
+    # === SOLVED TICKET ===
+    if data.get('ticket', {}).get('status') == 'solved':
+        ticket_id = data['ticket']['id']
+        cursor.execute("SELECT channel_id FROM tickets WHERE ticket_id = ?", (ticket_id,))
+        row = cursor.fetchone()
+        if row:
+            channel = discord_bot.get_channel(row[0])
+            if channel:
+                asyncio.run_coroutine_threadsafe(
+                    channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
+                                 "Send a new message here to reopen support."),
+                    discord_bot.loop
+                )
 
-    def log_message(self, format, *args):
-        # Disable log spam
-        return
+    # === SUCCESS ===
+    start_response('200 OK', [('Content-Type', 'application/json')])
+    return [b'{"status":"ok"}']
 
-def start_webhook_server():
-    server = HTTPServer(('0.0.0.0', 8080), DiscordWebhookHandler)
-    logging.info("Webhook server is LIVE and LISTENING on port 8080")
+def start_webhook():
+    logging.info("Webhook server LIVE on http://0.0.0.0:8080")
+    server = make_server('0.0.0.0', 8080, webhook_app)
     server.serve_forever()
 
-# === START WEBHOOK IN BACKGROUND ===
-threading.Thread(target=start_webhook_server, daemon=True).start()
+threading.Thread(target=start_webhook, daemon=True).start()
 
-# === START DISCORD BOT ===
+# === START BOT ===
 logging.info("Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
