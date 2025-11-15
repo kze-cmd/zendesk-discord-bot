@@ -1,4 +1,3 @@
-import logging
 import discord
 from discord.ext import commands
 import requests
@@ -7,13 +6,17 @@ import os
 from dotenv import load_dotenv
 import sqlite3
 import asyncio
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from aiohttp import web
 import threading
-import base64
+import logging
 
-load_dotenv()
+# === LOGGING ===
 logging.basicConfig(level=logging.INFO)
 
+# === LOAD ENV VARS (Render Secrets) ===
+load_dotenv()
+
+# === CONFIG ===
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 ZENDESK_SUBDOMAIN = os.getenv('ZENDESK_SUBDOMAIN')
 ZENDESK_EMAIL = os.getenv('ZENDESK_EMAIL')
@@ -22,9 +25,11 @@ MAIN_CHANNEL_ID = int(os.getenv('MAIN_CHANNEL_ID'))
 WEBHOOK_USER = os.getenv('WEBHOOK_USER')
 WEBHOOK_PASS = os.getenv('WEBHOOK_PASS')
 
+# Zendesk API
 ZENDESK_AUTH = requests.auth.HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_TOKEN)
 ZENDESK_URL = f'https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2'
 
+# === SQLITE DB ===
 conn = sqlite3.connect('tickets.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -36,6 +41,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
+# === DISCORD BOT ===
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -47,7 +53,7 @@ discord_bot = None
 async def on_ready():
     global discord_bot
     discord_bot = bot
-    print(f'{bot.user} is online and ready!')
+    logging.info(f'{bot.user} is online and ready!')
 
 @bot.event
 async def on_message(message):
@@ -57,6 +63,7 @@ async def on_message(message):
     user_id = message.author.id
     guild = message.guild
 
+    # === 1. MAIN CHANNEL: Create private + ticket ===
     if message.channel.id == MAIN_CHANNEL_ID:
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -73,6 +80,7 @@ async def on_message(message):
             "Our team will respond shortly. All messages here will sync with Zendesk."
         )
 
+        # Create Zendesk ticket
         payload = {
             "ticket": {
                 "subject": f"Discord Support: {message.content[:50]}...",
@@ -91,6 +99,7 @@ async def on_message(message):
             ticket_data = response.json()['ticket']
             ticket_id = ticket_data['id']
 
+            # Save mapping
             cursor.execute(
                 "INSERT OR REPLACE INTO tickets (user_id, channel_id, ticket_id) VALUES (?, ?, ?)",
                 (user_id, private_channel.id, ticket_id)
@@ -106,6 +115,7 @@ async def on_message(message):
 
         return
 
+    # === 2. PRIVATE CHANNEL: Send reply to Zendesk ===
     if message.channel.name.startswith('support-'):
         cursor.execute("SELECT ticket_id FROM tickets WHERE channel_id = ?", (message.channel.id,))
         result = cursor.fetchone()
@@ -123,34 +133,26 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# === 100% WORKING WEBHOOK (NO FLASK, BUILT-IN) ===
-from wsgiref.simple_server import make_server
-import json
-import threading
-
-def webhook_app(environ, start_response):
-    # === CHECK METHOD ===
-    if environ['REQUEST_METHOD'] != 'POST':
-        start_response('404 Not Found', [('Content-Type', 'application/json')])
-        return [b'{"message":"Cannot POST /","error":"Not Found","statusCode":404}']
-
+# === AIOHTTP WEBHOOK (100% WORKING ON RENDER) ===
+async def webhook_handler(request):
     # === AUTH ===
-    auth = environ.get('HTTP_AUTHORIZATION')
-    if auth != 'Basic ZGlzY29yZGJvdDpzdXBlcnNlY3JldDEyMw==':
-        start_response('401 Unauthorized', [('Content-Type', 'application/json')])
-        return [b'{"error":"Unauthorized"}']
-
-    # === READ BODY ===
+    auth = request.headers.get('Authorization')
+    expected_auth = f"Basic {WEBHOOK_USER}:{WEBHOOK_PASS}"
+    if not auth or not auth.startswith('Basic '):
+        return web.json_response({"error": "Missing auth"}, status=401)
     try:
-        length = int(environ.get('CONTENT_LENGTH', 0))
-    except ValueError:
-        length = 0
-    body = environ['wsgi.input'].read(length)
-    try:
-        data = json.loads(body)
+        import base64
+        decoded = base64.b64decode(auth.split(' ', 1)[1]).decode('utf-8')
+        if decoded != f"{WEBHOOK_USER}:{WEBHOOK_PASS}":
+            return web.json_response({"error": "Invalid credentials"}, status=401)
     except:
-        start_response('400 Bad Request', [('Content-Type', 'application/json')])
-        return [b'{"error":"Invalid JSON"}']
+        return web.json_response({"error": "Bad auth"}, status=401)
+
+    # === READ JSON ===
+    try:
+        data = await request.json()
+    except:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
 
     # === SOLVED TICKET ===
     if data.get('ticket', {}).get('status') == 'solved':
@@ -160,23 +162,24 @@ def webhook_app(environ, start_response):
         if row:
             channel = discord_bot.get_channel(row[0])
             if channel:
-                asyncio.run_coroutine_threadsafe(
-                    channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
-                                 "Send a new message here to reopen support."),
-                    discord_bot.loop
-                )
+                await channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
+                                   "Send a new message here to reopen support.")
 
-    # === SUCCESS ===
-    start_response('200 OK', [('Content-Type', 'application/json')])
-    return [b'{"status":"ok"}']
+    return web.json_response({"status": "ok"}, status=200)
 
-def start_webhook():
-    logging.info("Webhook server LIVE on http://0.0.0.0:8080")
-    server = make_server('0.0.0.0', 8080, webhook_app)
-    server.serve_forever()
+def start_aiohttp():
+    app = web.Application()
+    app.router.add_post('/', webhook_handler)
+    runner = web.AppRunner(app)
+    asyncio.run(runner.setup())
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    logging.info("AIOHTTP Webhook LIVE on http://0.0.0.0:8080")
+    asyncio.run(site.start())
+    asyncio.Event().wait()  # Keep alive
 
-threading.Thread(target=start_webhook, daemon=True).start()
+# === START WEBHOOK IN BACKGROUND ===
+threading.Thread(target=start_aiohttp, daemon=True).start()
 
-# === START BOT ===
+# === START DISCORD BOT ===
 logging.info("Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
