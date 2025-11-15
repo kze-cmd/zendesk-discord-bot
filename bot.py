@@ -9,6 +9,7 @@ import asyncio
 from aiohttp import web
 import threading
 import logging
+import base64
 
 # === LOGGING ===
 logging.basicConfig(level=logging.INFO)
@@ -113,7 +114,7 @@ async def on_message(message):
         else:
             await private_channel.send(f"Error creating ticket: {response.status_code} {response.text}")
 
-        return
+        # DO NOT RETURN — allow private channel replies to process below
 
     # === 2. PRIVATE CHANNEL: Send reply to Zendesk ===
     if message.channel.name.startswith('support-'):
@@ -133,15 +134,14 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+
 # === AIOHTTP WEBHOOK (100% WORKING ON RENDER) ===
 async def webhook_handler(request):
     # === AUTH ===
     auth = request.headers.get('Authorization')
-    expected_auth = f"Basic {WEBHOOK_USER}:{WEBHOOK_PASS}"
     if not auth or not auth.startswith('Basic '):
         return web.json_response({"error": "Missing auth"}, status=401)
     try:
-        import base64
         decoded = base64.b64decode(auth.split(' ', 1)[1]).decode('utf-8')
         if decoded != f"{WEBHOOK_USER}:{WEBHOOK_PASS}":
             return web.json_response({"error": "Invalid credentials"}, status=401)
@@ -159,13 +159,14 @@ async def webhook_handler(request):
         ticket_id = data['ticket']['id']
         cursor.execute("SELECT channel_id FROM tickets WHERE ticket_id = ?", (ticket_id,))
         row = cursor.fetchone()
-        if row:
+        if row and discord_bot:
             channel = discord_bot.get_channel(row[0])
             if channel:
                 await channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
                                    "Send a new message here to reopen support.")
 
     return web.json_response({"status": "ok"}, status=200)
+
 
 def start_aiohttp():
     app = web.Application()
@@ -175,9 +176,9 @@ def start_aiohttp():
     port = int(os.getenv('PORT', 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     logging.info(f"AIOHTTP Webhook LIVE on http://0.0.0.0:{port}")
-    logging.info("AIOHTTP Webhook LIVE on http://0.0.0.0:8080")
     asyncio.run(site.start())
     asyncio.Event().wait()  # Keep alive
+
 
 # === START WEBHOOK IN BACKGROUND ===
 threading.Thread(target=start_aiohttp, daemon=True).start()
