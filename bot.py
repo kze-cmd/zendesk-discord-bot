@@ -124,42 +124,37 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-# === WEBHOOK SERVER ===
-class WebhookHandler(BaseHTTPRequestHandler):
+# === WEBHOOK SERVER (SIMPLE & WORKING) ===
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+import threading
+
+class SimpleWebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
+        # === AUTH ===
         auth = self.headers.get('Authorization')
-        if not auth or not auth.startswith('Basic '):
+        if auth != 'Basic ZGlzY29yZGJvdDpzdXBlcnNlY3JldDEyMw==':
             self.send_response(401)
-            self.send_header('WWW-Authenticate', 'Basic realm="Zendesk"')
             self.end_headers()
             return
 
+        # === READ PAYLOAD ===
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
         try:
-            credentials = base64.b64decode(auth.split(' ', 1)[1]).decode('utf-8')
-            username, password = credentials.split(':', 1)
-            if username != WEBHOOK_USER or password != WEBHOOK_PASS:
-                raise ValueError("Invalid credentials")
+            data = json.loads(body)
         except:
-            self.send_response(401)
+            self.send_response(400)
             self.end_headers()
             return
 
-        global discord_bot
-        if not discord_bot:
-            self.send_response(503)
-            self.end_headers()
-            return
-
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-        data = json.loads(post_data.decode('utf-8'))
-
-        if 'ticket' in data and data['ticket'].get('status') == 'solved':
+        # === SOLVED TICKET ===
+        if data.get('ticket', {}).get('status') == 'solved':
             ticket_id = data['ticket']['id']
             cursor.execute("SELECT channel_id FROM tickets WHERE ticket_id = ?", (ticket_id,))
-            result = cursor.fetchone()
-            if result:
-                channel = discord_bot.get_channel(result[0])
+            row = cursor.fetchone()
+            if row:
+                channel = discord_bot.get_channel(row[0])
                 if channel:
                     asyncio.run_coroutine_threadsafe(
                         channel.send("**Ticket Solved**\nYour support request has been marked as resolved.\n"
@@ -168,21 +163,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     )
 
         self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(b"OK")
+        self.wfile.write(b'{"status":"ok"}')
 
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Zendesk -> Discord Webhook Active")
-
-
-def run_webhook_server():
-    server = HTTPServer(('0.0.0.0', 8080), WebhookHandler)
-    logging.info("Webhook server running on port 8080...")
+def start_webhook():
+    server = HTTPServer(('0.0.0.0', 8080), SimpleWebhookHandler)
+    logging.info("Webhook server LIVE on http://0.0.0.0:8080")
     server.serve_forever()
 
-threading.Thread(target=run_webhook_server, daemon=True).start()
-
-logging.info("Starting Discord bot...")
+threading.Thread(target=start_webhook, daemon=True).start()
 bot.run(DISCORD_TOKEN)
