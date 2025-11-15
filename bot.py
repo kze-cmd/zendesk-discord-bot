@@ -123,13 +123,12 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-
-# === WEBHOOK SERVER (SIMPLE & WORKING) ===
+# === WORKING WEBHOOK SERVER (NO FLASK) ===
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import threading
 
-class SimpleWebhookHandler(BaseHTTPRequestHandler):
+class DiscordWebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         # === AUTH ===
         auth = self.headers.get('Authorization')
@@ -138,9 +137,9 @@ class SimpleWebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # === READ PAYLOAD ===
+        # === READ BODY ===
         length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length)
+        body = self.rfile.read(length).decode('utf-8')
         try:
             data = json.loads(body)
         except:
@@ -162,15 +161,24 @@ class SimpleWebhookHandler(BaseHTTPRequestHandler):
                         discord_bot.loop
                     )
 
+        # === RESPONSE ===
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
         self.wfile.write(b'{"status":"ok"}')
 
-def start_webhook():
-    server = HTTPServer(('0.0.0.0', 8080), SimpleWebhookHandler)
-    logging.info("Webhook server LIVE on http://0.0.0.0:8080")
+    def log_message(self, format, *args):
+        # Disable log spam
+        return
+
+def start_webhook_server():
+    server = HTTPServer(('0.0.0.0', 8080), DiscordWebhookHandler)
+    logging.info("Webhook server is LIVE and LISTENING on port 8080")
     server.serve_forever()
 
-threading.Thread(target=start_webhook, daemon=True).start()
+# === START WEBHOOK IN BACKGROUND ===
+threading.Thread(target=start_webhook_server, daemon=True).start()
+
+# === START DISCORD BOT ===
+logging.info("Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
